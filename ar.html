@@ -58,7 +58,7 @@
 <script src="assets/actions.js"></script>
 <script src="assets/lib/aframe-v1.5.0.min.js"></script>
 <script src="assets/lib/mindar-image-aframe.prod.js?v=camera2"></script>
-<script src="assets/transparent-video.js?v=original125"></script>
+<script src="assets/transparent-video.js?v=matte3"></script>
 <script>
 (function () {
   'use strict';
@@ -122,7 +122,7 @@
     var assets = document.createElement('a-assets');
     var vid = document.createElement('video');
     vid.id = 'ar-vid';
-    vid.src = action.video;
+    vid.src = action.video.replace('.mp4', '-alpha.mp4');
     vid.setAttribute('loop', '');
     vid.setAttribute('playsinline', '');
     vid.setAttribute('webkit-playsinline', '');
