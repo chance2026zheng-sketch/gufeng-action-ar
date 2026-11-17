@@ -29,11 +29,27 @@
   #start-overlay p { font-size: 14px; line-height: 1.7; margin: 0; opacity: .85; max-width: 30em; }
   #start-overlay .btn { padding: 13px 30px; font-size: 16px; }
   #start-overlay.hide { display: none; }
+
+  #single-view {position:fixed;inset:0;z-index:35;background:#302b2a;display:none;overflow:hidden;}
+  #single-view.on {display:flex;align-items:center;justify-content:center;}
+  #single-art {width: min(74vw, 65vh);height:70vh;display:flex;align-items:center;justify-content:center;}
+  #single-art canvas {max-width:100%;max-height:100%;object-fit:contain;transform:scale(var(--zoom,1));}
+  #player-controls {position:absolute;bottom:25px;left:5%;width:90%;color:#fff;display:flex;flex-wrap:wrap;align-items:center;gap:10px;z-index:2;background:#211d1de6;padding:12px;box-sizing:border-box;border-radius:12px;}
+  #seek {flex:1;min-width:120px;} #zoom {width:110px;}
 </style>
 <link rel="stylesheet" href="assets/story.css"></head>
 <body>
 
 <div id="aframe-root"></div>
+<div id="single-view">
+  <div id="single-art"></div>
+  <div id="player-controls">
+    <button class="btn" id="play-toggle">暂停</button>
+    <input id="seek" type="range" min="0" max="1" step="0.01" value="0" aria-label="播放进度">
+    <span id="play-time">0:00 / 0:00</span>
+    <label for="zoom">大小</label><input id="zoom" type="range" min="0.5" max="2" step="0.05" value="1" aria-label="人物大小">
+  </div>
+</div>
 
 <!-- 陀螺仪兜底：扫不出原图时用 -->
 <div id="gyro-stage">
@@ -58,7 +74,7 @@
 <script src="assets/actions.js"></script>
 <script src="assets/lib/aframe-v1.5.0.min.js"></script>
 <script src="assets/lib/mindar-image-aframe.prod.js"></script>
-<script src="assets/transparent-video.js"></script>
+<script src="assets/transparent-video.js?v=2"></script>
 <script>
 (function () {
   'use strict';
@@ -99,7 +115,7 @@
   function showHud() {
     $('start-overlay').classList.add('hide');
     $('hud').style.display = 'flex';
-    $('story-controls').hidden=false;
+    $('story-controls').hidden=$('single-view').classList.contains('on');
     var badge = $('name-badge');
     badge.textContent = action.name + ' · ' + (mode === 'ar' ? '扫图追踪' : '陀螺仪');
     badge.style.display = 'block';
@@ -144,26 +160,50 @@
     // 1 单位 = 追踪图宽度，原点在图片中心；高度按追踪图比例铺满，误差 <0.2% 不变形
     var plane = document.createElement('a-video');
     plane.setAttribute('src', '#ar-vid');
-    plane.setAttribute('material', 'shader: white-key; src: #ar-vid; transparent: true; depthWrite: false; side: double');
+    plane.setAttribute('transparent-video', 'src: #ar-vid');
     plane.setAttribute('width', '1');
     plane.setAttribute('height', String(action.planeHeight.toFixed(4)));
     plane.setAttribute('position', '0 0 0');
+    plane.setAttribute('visible', false);
     target.appendChild(plane);
     scene.appendChild(target);
 
     $('aframe-root').appendChild(scene);
 
+
+    const formatTime = t => Math.floor((t || 0)/60) + ':' + String(Math.floor((t || 0)%60)).padStart(2,'0');
+    function openPlayer() {
+      if ($('single-view').classList.contains('on')) return;
+      const component = plane.components['transparent-video'];
+      if (component && !$('single-art').contains(component.canvas)) $('single-art').appendChild(component.canvas);
+      $('single-view').classList.add('on');
+      $('story-controls').hidden=true;
+      $('story-title').style.display='none';
+      $('name-badge').textContent=action.name+' · 单人物播放';
+      $('tip').classList.add('hide');
+      vid.play().catch(function () {});
+    }
+    $('play-toggle').onclick = function () {if(vid.paused) vid.play().catch(function(){}); else vid.pause();};
+    vid.addEventListener('play', () => {$('play-toggle').textContent='暂停';});
+    vid.addEventListener('pause', () => {$('play-toggle').textContent='播放';});
+    vid.addEventListener('timeupdate', () => {
+      $('seek').max=Number.isFinite(vid.duration)?vid.duration:1;
+      $('seek').value=vid.currentTime;
+      $('play-time').textContent=formatTime(vid.currentTime)+' / '+formatTime(vid.duration);
+    });
+    $('seek').oninput = function () {if(Number.isFinite(vid.duration))vid.currentTime=Number(this.value);};
+    $('zoom').oninput = function () {$('single-art').style.setProperty('--zoom',this.value);};
     var found = false;
     var lostCount = 0;
 
     target.addEventListener('targetFound', function () {
       found = true;
       lostCount = 0;
-      vid.play().catch(function () {});
-      tip('已锁定，移动手机视频会跟随原图', 3200);
+      openPlayer();
     });
 
     target.addEventListener('targetLost', function () {
+      if ($('single-view').classList.contains('on')) return;
       vid.pause();
       lostCount++;
       tip('已丢失原图，把镜头对准画面', 2600);
@@ -274,7 +314,12 @@
   }
 
   /* iOS 需用户手势后才能启动摄像头与播放视频 */
+  let starting = false;
   $('ov-start').addEventListener('click', function () {
+    if (starting) return;
+    starting = true;
+    $('ov-start').disabled = true;
+    $('ov-start').textContent = '正在启动…';
     if (mode === 'ar') startAR(); else startGyro();
   });
 })();
