@@ -69,7 +69,7 @@
   <button class="btn ghost" id="btn-switch">切换兜底模式</button>
 </div>
 <div id="name-badge" style="display:none"></div>
-<div id="story-title"><small>楚韵新生 · AR 奇遇</small><h1>凤鸟衔来的千年</h1></div><section id="story-controls" hidden><nav id="scene-tabs" aria-label="切换场景"></nav><div class="size-row"><label for="character-size">人物大小</label><input id="character-size" type="range" min="50" max="150" value="100"><output id="size-value">100%</output><button id="size-reset">复原</button></div><p id="scene-story"></p></section><div id="tip" class="hide"></div>
+<div id="story-title"><small>楚韵新生 · AR 奇遇</small><h1>凤鸟衔来的千年</h1></div><section id="story-controls" hidden><nav id="scene-tabs" aria-label="切换场景"></nav><div class="size-row"><label for="character-size">人物大小</label><input id="character-size" type="range" min="50" max="150" value="100"><output id="size-value">100%</output><button id="size-reset">复原</button></div></section><div id="tip" class="hide"></div>
 
 <script src="assets/actions.js"></script>
 <script src="assets/lib/aframe-v1.5.0.min.js"></script>
@@ -104,11 +104,10 @@
 
   document.title = action.name + ' · 凤鸟衔来的千年';
   $('ov-title').textContent = '凤鸟衔来的千年 · ' + action.name;
-  $('ov-desc').textContent = action.desc;
+  $('ov-desc').hidden = true;
   $('btn-back').addEventListener('click', function () { location.href = 'index.html'; });
 
   window.AR_ORDER.forEach(function(k){var a=window.getAction(k),b=document.createElement('a');b.textContent=a.name;b.href='ar.html?action='+encodeURIComponent(k)+'&mode='+mode;b.className=k===key?'selected':'';if(k===key)b.setAttribute('aria-current','true');$('scene-tabs').appendChild(b);});
-  $('scene-story').textContent=action.desc;
   function resizeCharacter(){var n=Number($('character-size').value)/100;$('size-value').textContent=Math.round(n*100)+'%';$('float-wrap').style.width=(62*n)+'vmin';var plane=document.querySelector('a-video');if(plane)plane.setAttribute('scale',n+' '+n+' '+n);}
   $('character-size').addEventListener('input',resizeCharacter);
   $('size-reset').onclick=function(){$('character-size').value=100;resizeCharacter();};
