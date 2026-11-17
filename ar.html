@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="icon" href="data:,">
+<title>古风动作 AR</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #1a1214; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  #aframe-root { position: fixed; inset: 0; }
+  /* 陀螺仪兜底模式 */
+  #gyro-stage { position: fixed; inset: 0; display: none; background: #000; }
+  #gyro-stage.on { display: block; }
+  #cam { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  #float-wrap { position: absolute; left: 50%; top: 50%; width: 62vmin; will-change: transform; }
+  #float-wrap video { width: 100%; height: auto; display: block; border-radius: 10px; box-shadow: 0 8px 34px rgba(0,0,0,.55); }
+  /* 覆盖层 UI */
+  #hud { position: fixed; left: 0; right: 0; top: 0; padding: calc(10px + env(safe-area-inset-top)) 14px 0; display: flex; align-items: center; gap: 10px; z-index: 40; pointer-events: none; }
+  #hud > * { pointer-events: auto; }
+  .btn { appearance: none; border: 0; border-radius: 999px; padding: 9px 16px; font-size: 14px; font-weight: 600; color: #fff; background: rgba(140,32,46,.88); backdrop-filter: blur(6px); cursor: pointer; }
+  .btn.ghost { background: rgba(0,0,0,.42); }
+  #tip { position: fixed; left: 50%; bottom: calc(26px + env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 40; max-width: 86vw; padding: 10px 18px; border-radius: 999px; font-size: 14px; line-height: 1.5; text-align: center; color: #fff; background: rgba(0,0,0,.55); backdrop-filter: blur(6px); transition: opacity .3s; }
+  #tip.hide { opacity: 0; pointer-events: none; }
+  #name-badge { position: fixed; right: 14px; top: calc(58px + env(safe-area-inset-top)); z-index: 40; padding: 7px 14px; border-radius: 999px; font-size: 13px; color: #f7e7c8; background: rgba(140,32,46,.78); }
+  #start-overlay { position: fixed; inset: 0; z-index: 60; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; background: linear-gradient(160deg,#2a1b1d,#1a1214); color: #f7e7c8; text-align: center; padding: 24px; box-sizing: border-box; }
+  #start-overlay h1 { font-size: 22px; margin: 0; font-weight: 700; }
+  #start-overlay p { font-size: 14px; line-height: 1.7; margin: 0; opacity: .85; max-width: 30em; }
+  #start-overlay .btn { padding: 13px 30px; font-size: 16px; }
+  #start-overlay.hide { display: none; }
+</style>
+</head>
+<body>
+
+<div id="aframe-root"></div>
+
+<!-- 陀螺仪兜底：扫不出原图时用 -->
+<div id="gyro-stage">
+  <video id="cam" autoplay playsinline webkit-playsinline muted></video>
+  <div id="float-wrap"><video id="float" loop playsinline webkit-playsinline muted></video></div>
+</div>
+
+<div id="start-overlay">
+  <h1 id="ov-title">古风动作 AR</h1>
+  <p id="ov-desc"></p>
+  <button class="btn" id="ov-start">开启摄像头</button>
+  <p style="font-size:12px;opacity:.6">需要 HTTPS 环境并授权摄像头</p>
+</div>
+
+<div id="hud" style="display:none">
+  <button class="btn ghost" id="btn-back">← 返回</button>
+  <button class="btn ghost" id="btn-switch">切换兜底模式</button>
+</div>
+<div id="name-badge" style="display:none"></div>
+<div id="tip" class="hide"></div>
+
+<script src="assets/actions.js"></script>
+<script src="assets/lib/aframe-v1.5.0.min.js"></script>
+<script src="assets/lib/mindar-image-aframe.prod.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  var params = new URLSearchParams(location.search);
+  var key = params.get('action');
+  var mode = params.get('mode') === 'gyro' ? 'gyro' : 'ar';
+  var action = window.getAction(key);
+
+  var $ = function (id) { return document.getElementById(id); };
+  var tipTimer = null;
+
+  function tip(text, ms) {
+    var el = $('tip');
+    el.textContent = text;
+    el.classList.remove('hide');
+    if (tipTimer) clearTimeout(tipTimer);
+    if (ms) tipTimer = setTimeout(function () { el.classList.add('hide'); }, ms);
+  }
+
+  if (!action) {
+    $('ov-title').textContent = '动作参数缺失';
+    $('ov-desc').textContent = '请从首页选择一个动作进入。';
+    $('ov-start').style.display = 'none';
+    return;
+  }
+
+  document.title = action.name + ' · AR';
+  $('ov-title').textContent = action.name;
+  $('ov-desc').textContent = action.desc;
+  $('btn-back').addEventListener('click', function () { location.href = 'index.html'; });
+
+  function showHud() {
+    $('start-overlay').classList.add('hide');
+    $('hud').style.display = 'flex';
+    var badge = $('name-badge');
+    badge.textContent = action.name + ' · ' + (mode === 'ar' ? '扫图追踪' : '陀螺仪');
+    badge.style.display = 'block';
+  }
+
+  /* ============ AR 模式：MindAR 图像追踪 ============ */
+  function startAR() {
+    var scene = document.createElement('a-scene');
+    scene.setAttribute('mindar-image',
+      'imageTargetSrc: ' + action.target + ';' +
+      'autoStart: true; uiLoading: no; uiScanning: no; uiError: no;' +
+      'maxTrack: 1; missTolerance: 3; warmupTolerance: 2');
+    scene.setAttribute('color-space', 'sRGB');
+    scene.setAttribute('renderer', 'antialias: true; colorManagement: true; physicallyCorrectLights: true');
+    scene.setAttribute('embedded', '');
+    scene.setAttribute('vr-mode-ui', 'enabled: false');
+    scene.setAttribute('device-orientation-permission-ui', 'enabled: false');
+    scene.setAttribute('loading-screen', 'enabled: false');
+    scene.style.cssText = 'position:fixed;inset:0;width:100%;height:100%';
+
+    var assets = document.createElement('a-assets');
+    var vid = document.createElement('video');
+    vid.id = 'ar-vid';
+    vid.src = action.video;
+    vid.setAttribute('loop', '');
+    vid.setAttribute('playsinline', '');
+    vid.setAttribute('webkit-playsinline', '');
+    vid.setAttribute('preload', 'auto');
+    vid.muted = true;
+    assets.appendChild(vid);
+    scene.appendChild(assets);
+
+    var cam = document.createElement('a-camera');
+    cam.setAttribute('position', '0 0 0');
+    cam.setAttribute('look-controls', 'enabled: false');
+    cam.setAttribute('wasd-controls', 'enabled: false');
+    scene.appendChild(cam);
+
+    var target = document.createElement('a-entity');
+    target.setAttribute('mindar-image-target', 'targetIndex: 0');
+
+    // 1 单位 = 追踪图宽度，原点在图片中心；高度按追踪图比例铺满，误差 <0.2% 不变形
+    var plane = document.createElement('a-video');
+    plane.setAttribute('src', '#ar-vid');
+    plane.setAttribute('width', '1');
+    plane.setAttribute('height', String(action.planeHeight.toFixed(4)));
+    plane.setAttribute('position', '0 0 0');
+    target.appendChild(plane);
+    scene.appendChild(target);
+
+    $('aframe-root').appendChild(scene);
+
+    var found = false;
+    var lostCount = 0;
+
+    target.addEventListener('targetFound', function () {
+      found = true;
+      lostCount = 0;
+      vid.play().catch(function () {});
+      tip('已锁定，移动手机视频会跟随原图', 3200);
+    });
+
+    target.addEventListener('targetLost', function () {
+      vid.pause();
+      lostCount++;
+      tip('已丢失原图，把镜头对准画面', 2600);
+      if (lostCount >= 3) {
+        tip('追踪不稳定，可点左上角切换兜底模式', 5200);
+        lostCount = 0;
+      }
+    });
+
+    scene.addEventListener('loaded', function () {
+      showHud();
+      tip('缓慢移动镜头，对准下方参考图（' + action.name + '）', 6000);
+    });
+
+    scene.addEventListener('arError', function () {
+      tip('摄像头启动失败，请检查权限或用 HTTPS 访问', 7000);
+    });
+
+    // 40 秒未识别则提示兜底
+    setTimeout(function () {
+      if (!found) tip('没扫出来？手绘线条特征较少，可切换兜底模式', 8000);
+    }, 40000);
+
+    $('btn-switch').textContent = '切换兜底模式';
+    $('btn-switch').onclick = function () { location.href = 'ar.html?action=' + key + '&mode=gyro'; };
+  }
+
+  /* ============ 陀螺仪兜底：摄像头实景 + 视频悬浮随动 ============ */
+  function startGyro() {
+    $('gyro-stage').classList.add('on');
+    var camEl = $('cam');
+    var floatEl = $('float');
+    var wrap = $('float-wrap');
+    floatEl.src = action.video;
+    floatEl.muted = true;
+
+    function playAll() {
+      if (floatEl.paused) floatEl.play().catch(function () {});
+    }
+
+    var ready = false;
+    navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 } },
+      audio: false
+    }).then(function (stream) {
+      camEl.srcObject = stream;
+      camEl.play().catch(function () {});
+      ready = true;
+      showHud();
+      playAll();
+      tip('转动手机，人物会随视角移动', 4200);
+      bindOrientation();
+    }).catch(function () {
+      showHud();
+      // 摄像头不可用时退化为纯视频播放
+      camEl.style.display = 'none';
+      $('gyro-stage').style.background = '#241a1c';
+      playAll();
+      tip('摄像头不可用，当前为普通播放模式', 6000);
+      bindOrientation();
+    });
+
+    var alpha = 0, beta = 0, gamma = 0;
+    var sAlpha = 0, sBeta = 0, sGamma = 0;
+
+    function onOrient(e) {
+      if (e.alpha != null) alpha = e.alpha;
+      if (e.beta != null) beta = e.beta;
+      if (e.gamma != null) gamma = e.gamma;
+    }
+
+    function bindOrientation() {
+      function attach() { window.addEventListener('deviceorientation', onOrient, true); tick(); }
+      if (typeof DeviceOrientationEvent !== 'undefined' &&
+          typeof DeviceOrientationEvent.requestPermission === 'function') {
+        DeviceOrientationEvent.requestPermission().then(function (s) {
+          if (s === 'granted') attach(); else startIdle();
+        }).catch(startIdle);
+      } else {
+        attach();
+      }
+    }
+
+    function startIdle() {
+      tip('未获传感器权限，视频保持居中', 4200);
+      tick();
+    }
+
+    function tick() {
+      // 平滑插值，避免抖动
+      sAlpha += (alpha - sAlpha) * 0.12;
+      sBeta += (beta - sBeta) * 0.12;
+      sGamma += (gamma - sGamma) * 0.12;
+
+      var dx = Math.max(-60, Math.min(60, sGamma)) * 3.2;
+      var dy = Math.max(-60, Math.min(60, sBeta - 45)) * 3.2;
+      var rot = Math.max(-14, Math.min(14, sGamma * 0.22));
+      var sc = 1 + Math.max(-0.18, Math.min(0.18, (sAlpha % 60 - 30) / 300));
+
+      wrap.style.transform = 'translate(-50%,-50%) translate(' + dx.toFixed(2) + 'px,' +
+        (-dy).toFixed(2) + 'px) rotate(' + rot.toFixed(2) + 'deg) scale(' + sc.toFixed(3) + ')';
+      requestAnimationFrame(tick);
+    }
+
+    wrap.addEventListener('click', playAll);
+    $('btn-switch').textContent = '切换扫图模式';
+    $('btn-switch').onclick = function () { location.href = 'ar.html?action=' + key + '&mode=ar'; };
+  }
+
+  /* iOS 需用户手势后才能启动摄像头与播放视频 */
+  $('ov-start').addEventListener('click', function () {
+    if (mode === 'ar') startAR(); else startGyro();
+  });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="icon" href="data:,">
+<title>古风动作 AR</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; padding: 0; background: #1a1214; color: #f7e7c8; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  body { min-height: 100vh; padding: calc(22px + env(safe-area-inset-top)) 16px calc(30px + env(safe-area-inset-bottom)); }
+  .wrap { max-width: 720px; margin: 0 auto; }
+  header { text-align: center; margin-bottom: 22px; }
+  h1 { font-size: 24px; margin: 0 0 8px; font-weight: 700; letter-spacing: 2px; }
+  .sub { font-size: 13px; line-height: 1.7; opacity: .72; margin: 0; }
+  .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+  @media (min-width: 620px) { .grid { grid-template-columns: repeat(4, 1fr); } }
+  .card { position: relative; display: block; padding: 0; border: 0; border-radius: 14px; overflow: hidden; background: #241a1c; cursor: pointer; text-align: left; transition: transform .15s; }
+  .card:active { transform: scale(.97); }
+  .thumb { width: 100%; aspect-ratio: 1/1; object-fit: contain; background: #fff; display: block; }
+  .cap { padding: 10px 12px 13px; }
+  .cap b { display: block; font-size: 16px; margin-bottom: 4px; color: #f7e7c8; }
+  .cap span { display: block; font-size: 12px; line-height: 1.55; opacity: .68; }
+  .sec { margin-top: 26px; padding: 16px 18px; border-radius: 14px; background: #241a1c; }
+  .sec h2 { font-size: 15px; margin: 0 0 10px; }
+  .sec p { font-size: 13px; line-height: 1.8; margin: 0 0 8px; opacity: .8; }
+  .sec p:last-child { margin-bottom: 0; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
+  .btn { appearance: none; border: 0; border-radius: 999px; padding: 10px 18px; font-size: 13px; font-weight: 600; color: #fff; background: #8c202e; cursor: pointer; }
+  .btn.ghost { background: #3a2a2c; }
+  input[type=text] { flex: 1 1 200px; min-width: 0; padding: 10px 14px; border-radius: 10px; border: 1px solid #4a3a3c; background: #1a1214; color: #f7e7c8; font-size: 13px; }
+  #qrbox { margin-top: 14px; text-align: center; }
+  #qrbox canvas, #qrbox img { border-radius: 10px; background: #fff; padding: 8px; max-width: 100%; }
+  #qrtext { font-size: 12px; opacity: .66; margin-top: 8px; word-break: break-all; }
+  .ref { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 12px; }
+  .ref img { width: 100%; aspect-ratio: 1/1; object-fit: contain; background: #fff; border-radius: 8px; }
+  .ref div { font-size: 11px; text-align: center; margin-top: 4px; opacity: .68; }
+  .note { margin-top: 22px; font-size: 12px; line-height: 1.85; opacity: .6; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>古风动作 AR</h1>
+    <p class="sub">选择一个动作进入 AR，用摄像头扫描下方对应的手绘参考图<br>视频会贴附在图上，移动手机时随之跟随</p>
+  </header>
+
+  <div class="grid" id="grid"></div>
+
+  <div class="sec">
+    <h2>扫描参考图</h2>
+    <p>把下面四张图打印出来，或在另一块屏幕上全屏显示，即可作为 AR 触发图。手绘线条特征点较少，请保证光线充足、图面正对镜头、不要倾斜过大。</p>
+    <div class="ref" id="ref"></div>
+  </div>
+
+  <div class="sec">
+    <h2>生成本站二维码</h2>
+    <p>填入本站部署后的 HTTPS 地址，点生成即可得到二维码图片，右键或长按保存后打印。地址需以 https:// 开头，否则手机无法调用摄像头。</p>
+    <div class="row">
+      <input type="text" id="urlin" placeholder="https://your-name.github.io/your-repo/">
+      <button class="btn" id="gen">生成二维码</button>
+      <button class="btn ghost" id="autourl">用当前地址</button>
+    </div>
+    <div id="qrbox"></div>
+    <div id="qrtext"></div>
+  </div>
+
+  <p class="note">
+    若扫图始终无法识别，可在 AR 页面点右上角切换到兜底模式：摄像头实景中悬浮播放视频，随手机转动而移动，不依赖图像识别。<br>
+    所有资源均为本地文件，不依赖外部 CDN。
+  </p>
+</div>
+
+<script src="assets/actions.js"></script>
+<script src="assets/lib/qrcode.bundle.min.js"></script>
+<script>
+(function () {
+  'use strict';
+  var grid = document.getElementById('grid');
+  var ref = document.getElementById('ref');
+
+  window.AR_ORDER.forEach(function (key) {
+    var a = window.getAction(key);
+    var card = document.createElement('a');
+    card.className = 'card';
+    card.href = 'ar.html?action=' + key + '&mode=ar';
+
+    var img = document.createElement('img');
+    img.className = 'thumb';
+    img.src = a.img;
+    img.alt = a.name;
+    img.loading = 'lazy';
+    card.appendChild(img);
+
+    var cap = document.createElement('div');
+    cap.className = 'cap';
+    cap.innerHTML = '<b></b><span></span>';
+    cap.querySelector('b').textContent = a.name;
+    cap.querySelector('span').textContent = a.desc;
+    card.appendChild(cap);
+    grid.appendChild(card);
+
+    var cell = document.createElement('div');
+    var rimg = document.createElement('img');
+    rimg.src = a.img;
+    rimg.alt = a.name + ' 参考图';
+    rimg.loading = 'lazy';
+    var rlab = document.createElement('div');
+    rlab.textContent = a.name;
+    cell.appendChild(rimg);
+    cell.appendChild(rlab);
+    ref.appendChild(cell);
+  });
+
+  // 预填当前站点根地址
+  var urlin = document.getElementById('urlin');
+  var base = location.href.split('?')[0].replace(/\/[^\/]*$/, '/');
+  urlin.value = base;
+
+  document.getElementById('autourl').addEventListener('click', function () {
+    urlin.value = base;
+  });
+
+  function render(u) {
+    var box = document.getElementById('qrbox');
+    var txt = document.getElementById('qrtext');
+    box.innerHTML = '';
+    txt.textContent = '';
+    if (!/^https:\/\//i.test(u)) {
+      txt.textContent = '地址必须以 https:// 开头，否则手机扫码后无法调用摄像头。';
+      return;
+    }
+    if (!window.QRCode) {
+      txt.textContent = '二维码库未加载。';
+      return;
+    }
+    var canvas = document.createElement('canvas');
+    box.appendChild(canvas);
+    window.QRCode.toCanvas(canvas, u, {
+      width: 260,
+      margin: 2,
+      errorCorrectionLevel: 'M',
+      color: { dark: '#1a1214', light: '#ffffff' }
+    }, function (err) {
+      if (err) { txt.textContent = '生成失败：' + err.message; return; }
+      txt.textContent = u;
+      var dl = document.createElement('a');
+      dl.className = 'btn ghost';
+      dl.style.display = 'inline-block';
+      dl.style.marginTop = '10px';
+      dl.textContent = '下载二维码';
+      dl.download = 'ar-qrcode.png';
+      dl.href = canvas.toDataURL('image/png');
+      document.getElementById('qrbox').appendChild(dl);
+    });
+  }
+
+  document.getElementById('gen').addEventListener('click', function () {
+    render(urlin.value.trim());
+  });
+  urlin.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') render(urlin.value.trim());
+  });
+})();
+</script>
+</body>
+</html>
