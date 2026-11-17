@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <link rel="icon" href="data:,">
-<title>凤鸟衔来的千年记忆</title>
+<title>凤鸟衔来的千年</title>
 <style>
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body { margin: 0; padding: 0; background: #1a1214; color: #f7e7c8; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
@@ -38,15 +38,15 @@
   .ref div { font-size: 11px; text-align: center; margin-top: 4px; opacity: .68; }
   .note { margin-top: 22px; font-size: 12px; line-height: 1.85; opacity: .6; }
 </style>
-</head>
+<link rel="stylesheet" href="assets/story.css"></head>
 <body>
 <div class="wrap">
-  <header>
-    <h1>凤鸟衔来的千年记忆</h1>
+  <header><div class="eyebrow">楚韵新生 · 四时有声</div>
+    <h1>凤鸟衔来的千年</h1>
     <p class="sub">选择一个动作进入 AR，用摄像头扫描下方对应的手绘参考图<br>视频会贴附在图上，移动手机时随之跟随</p>
   </header>
 
-  <div class="grid" id="grid"></div>
+<p class="chapter">壹 · 选择一段千年故事</p><div class="grid" id="grid"></div><section class="story"><span>一羽衔古今，一舞见千年</span><h2>让记忆，在眼前苏醒。</h2><p>击鼓，唤起悠远回响；祈福，寄托心中所愿。<br>纺织，织就日常经纬；书写，留下此刻心声。</p><a href="ar.html?action=drum&mode=ar" id="hero-start" class="btn">选择场景，开启奇遇</a></section>
 
   <div class="sec">
     <h2>扫描参考图</h2>
@@ -80,6 +80,7 @@
   var grid = document.getElementById('grid');
   var ref = document.getElementById('ref');
 
+  document.getElementById('hero-start').href='ar.html?action='+window.AR_ORDER[0]+'&mode=ar';
   window.AR_ORDER.forEach(function (key) {
     var a = window.getAction(key);
     var card = document.createElement('a');

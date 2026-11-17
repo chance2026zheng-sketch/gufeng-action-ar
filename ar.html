@@ -6,7 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <link rel="icon" href="data:,">
-<title>凤鸟衔来的千年记忆</title>
+<title>凤鸟衔来的千年</title>
 <style>
   html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #1a1214; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
   #aframe-root { position: fixed; inset: 0; }
@@ -30,7 +30,7 @@
   #start-overlay .btn { padding: 13px 30px; font-size: 16px; }
   #start-overlay.hide { display: none; }
 </style>
-</head>
+<link rel="stylesheet" href="assets/story.css"></head>
 <body>
 
 <div id="aframe-root"></div>
@@ -42,7 +42,7 @@
 </div>
 
 <div id="start-overlay">
-  <h1 id="ov-title">凤鸟衔来的千年记忆</h1>
+  <h1 id="ov-title">凤鸟衔来的千年</h1>
   <p id="ov-desc"></p>
   <button class="btn" id="ov-start">开启摄像头</button>
   <p style="font-size:12px;opacity:.6">需要 HTTPS 环境并授权摄像头</p>
@@ -53,7 +53,7 @@
   <button class="btn ghost" id="btn-switch">切换兜底模式</button>
 </div>
 <div id="name-badge" style="display:none"></div>
-<div id="tip" class="hide"></div>
+<div id="story-title"><small>楚韵新生 · AR 奇遇</small><h1>凤鸟衔来的千年</h1></div><section id="story-controls" hidden><nav id="scene-tabs" aria-label="切换场景"></nav><div class="size-row"><label for="character-size">人物大小</label><input id="character-size" type="range" min="50" max="150" value="100"><output id="size-value">100%</output><button id="size-reset">复原</button></div><p id="scene-story"></p></section><div id="tip" class="hide"></div>
 
 <script src="assets/actions.js"></script>
 <script src="assets/lib/aframe-v1.5.0.min.js"></script>
@@ -86,14 +86,20 @@
     return;
   }
 
-  document.title = action.name + ' · 凤鸟衔来的千年记忆';
-  $('ov-title').textContent = '凤鸟衔来的千年记忆 · ' + action.name;
+  document.title = action.name + ' · 凤鸟衔来的千年';
+  $('ov-title').textContent = '凤鸟衔来的千年 · ' + action.name;
   $('ov-desc').textContent = action.desc;
   $('btn-back').addEventListener('click', function () { location.href = 'index.html'; });
 
+  window.AR_ORDER.forEach(function(k){var a=window.getAction(k),b=document.createElement('a');b.textContent=a.name;b.href='ar.html?action='+encodeURIComponent(k)+'&mode='+mode;b.className=k===key?'selected':'';if(k===key)b.setAttribute('aria-current','true');$('scene-tabs').appendChild(b);});
+  $('scene-story').textContent=action.desc;
+  function resizeCharacter(){var n=Number($('character-size').value)/100;$('size-value').textContent=Math.round(n*100)+'%';$('float-wrap').style.width=(62*n)+'vmin';var plane=document.querySelector('a-video');if(plane)plane.setAttribute('scale',n+' '+n+' '+n);}
+  $('character-size').addEventListener('input',resizeCharacter);
+  $('size-reset').onclick=function(){$('character-size').value=100;resizeCharacter();};
   function showHud() {
     $('start-overlay').classList.add('hide');
     $('hud').style.display = 'flex';
+    $('story-controls').hidden=false;
     var badge = $('name-badge');
     badge.textContent = action.name + ' · ' + (mode === 'ar' ? '扫图追踪' : '陀螺仪');
     badge.style.display = 'block';
