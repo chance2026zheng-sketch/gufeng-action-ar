@@ -30,10 +30,9 @@
   #start-overlay .btn { padding: 13px 30px; font-size: 16px; }
   #start-overlay.hide { display: none; }
 
-  #single-view {position:fixed;inset:0;z-index:35;background:#302b2a;display:none;overflow:hidden;}
-  #single-view.on {display:flex;align-items:center;justify-content:center;}
-  #single-art {width: min(74vw, 65vh);height:70vh;display:flex;align-items:center;justify-content:center;}
-  #single-art canvas {max-width:100%;max-height:100%;object-fit:contain;transform:scale(var(--zoom,1));}
+  #ar-controls {position:fixed;inset:0;z-index:41;pointer-events:none;}
+  #ar-controls[hidden] {display:none;}
+  #player-controls {pointer-events:auto;}
   #player-controls {position:absolute;bottom:25px;left:5%;width:90%;color:#fff;display:flex;flex-wrap:wrap;align-items:center;gap:10px;z-index:2;background:#211d1de6;padding:12px;box-sizing:border-box;border-radius:12px;}
   #seek {flex:1;min-width:120px;} #zoom {width:110px;}
 </style>
@@ -41,8 +40,7 @@
 <body>
 
 <div id="aframe-root"></div>
-<div id="single-view">
-  <div id="single-art"></div>
+<div id="ar-controls" hidden>
   <div id="player-controls">
     <button class="btn" id="play-toggle">暂停</button>
     <input id="seek" type="range" min="0" max="1" step="0.01" value="0" aria-label="播放进度">
@@ -114,7 +112,7 @@
   function showHud() {
     $('start-overlay').classList.add('hide');
     $('hud').style.display = 'flex';
-    $('story-controls').hidden=$('single-view').classList.contains('on');
+    $('story-controls').hidden = mode === 'ar';
     var badge = $('name-badge');
     badge.textContent = action.name + ' · ' + (mode === 'ar' ? '扫图追踪' : '陀螺仪');
     badge.style.display = 'block';
@@ -163,7 +161,7 @@
     plane.setAttribute('width', '1');
     plane.setAttribute('height', String(action.planeHeight.toFixed(4)));
     plane.setAttribute('position', '0 0 0');
-    plane.setAttribute('visible', false);
+    plane.setAttribute('visible', true);
     target.appendChild(plane);
     scene.appendChild(target);
 
@@ -171,16 +169,12 @@
 
 
     const formatTime = t => Math.floor((t || 0)/60) + ':' + String(Math.floor((t || 0)%60)).padStart(2,'0');
-    function openPlayer() {
-      if ($('single-view').classList.contains('on')) return;
-      const component = plane.components['transparent-video'];
-      if (component && !$('single-art').contains(component.canvas)) $('single-art').appendChild(component.canvas);
-      $('single-view').classList.add('on');
-      $('story-controls').hidden=true;
-      $('story-title').style.display='none';
-      $('name-badge').textContent=action.name+' · 单人物播放';
-      $('tip').classList.add('hide');
-      vid.play().catch(function () {});
+    function showARControls() {
+      $('ar-controls').hidden = false;
+      $('story-controls').hidden = true;
+      $('name-badge').textContent = action.name + ' · AR 图像追踪';
+      vid.play().catch(function () {tip('点击播放按钮启动动画');});
+      tip('已锁定原图，移动手机可从不同角度观看', 3000);
     }
     $('play-toggle').onclick = function () {if(vid.paused) vid.play().catch(function(){}); else vid.pause();};
     vid.addEventListener('play', () => {$('play-toggle').textContent='暂停';});
@@ -191,18 +185,18 @@
       $('play-time').textContent=formatTime(vid.currentTime)+' / '+formatTime(vid.duration);
     });
     $('seek').oninput = function () {if(Number.isFinite(vid.duration))vid.currentTime=Number(this.value);};
-    $('zoom').oninput = function () {$('single-art').style.setProperty('--zoom',this.value);};
+    $('zoom').oninput = function () {const n=Number(this.value);plane.object3D.scale.set(n,n,n);};
     var found = false;
     var lostCount = 0;
 
     target.addEventListener('targetFound', function () {
       found = true;
       lostCount = 0;
-      openPlayer();
+      showARControls();
     });
 
     target.addEventListener('targetLost', function () {
-      if ($('single-view').classList.contains('on')) return;
+      $('ar-controls').hidden = true;
       vid.pause();
       lostCount++;
       tip('已丢失原图，把镜头对准画面', 2600);
