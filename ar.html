@@ -73,7 +73,7 @@
 
 <script src="assets/actions.js"></script>
 <script src="assets/lib/aframe-v1.5.0.min.js"></script>
-<script src="assets/lib/mindar-image-aframe.prod.js"></script>
+<script src="assets/lib/mindar-image-aframe.prod.js?v=camera2"></script>
 <script src="assets/transparent-video.js?v=2"></script>
 <script>
 (function () {
@@ -167,7 +167,7 @@
     target.appendChild(plane);
     scene.appendChild(target);
 
-    $('aframe-root').appendChild(scene);
+
 
 
     const formatTime = t => Math.floor((t || 0)/60) + ':' + String(Math.floor((t || 0)%60)).padStart(2,'0');
@@ -212,14 +212,38 @@
       }
     });
 
+    let startupTimer;
+    let cameraReady = false;
+    function startupFailed(message) {
+      clearTimeout(startupTimer);
+      $('start-overlay').classList.remove('hide');
+      $('ov-desc').hidden = false;
+      $('ov-desc').textContent = message;
+      $('ov-start').disabled = false;
+      $('ov-start').textContent = '重新开启摄像头';
+      $('ov-start').onclick = function () { location.reload(); };
+    }
     scene.addEventListener('loaded', function () {
       showHud();
-      tip('缓慢移动镜头，对准下方参考图（' + action.name + '）', 6000);
+      tip('正在启动摄像头和识别，请稍候…');
+    });
+    scene.addEventListener('arReady', function () {
+      cameraReady = true;
+      clearTimeout(startupTimer);
+      showHud();
+      tip('摄像头已开启，请对准' + action.name + '参考图', 6000);
     });
 
-    scene.addEventListener('arError', function () {
-      tip('摄像头启动失败，请检查权限或用 HTTPS 访问', 7000);
+    scene.addEventListener('arError', function (event) {
+      const reason = event.detail && event.detail.error;
+      startupFailed(reason === 'NotAllowedError'
+        ? '浏览器未允许摄像头或自动播放。请用手机 Safari / Chrome 打开本站，允许相机后重试。'
+        : '摄像头或识别启动失败（' + (reason || '未知错误') + '）。请关闭其他占用相机的页面后重试。');
     });
+    startupTimer = setTimeout(function () {
+      if (!cameraReady) startupFailed('相机或识别资源加载超时。请检查网络，并用 Safari / Chrome 打开本站后重试。');
+    }, 45000);
+    $('aframe-root').appendChild(scene);
 
     // 40 秒未识别则提示兜底
     setTimeout(function () {
