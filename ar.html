@@ -6,7 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <link rel="icon" href="data:,">
-<title>古风动作 AR</title>
+<title>凤鸟衔来的千年记忆</title>
 <style>
   html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #1a1214; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
   #aframe-root { position: fixed; inset: 0; }
@@ -42,7 +42,7 @@
 </div>
 
 <div id="start-overlay">
-  <h1 id="ov-title">古风动作 AR</h1>
+  <h1 id="ov-title">凤鸟衔来的千年记忆</h1>
   <p id="ov-desc"></p>
   <button class="btn" id="ov-start">开启摄像头</button>
   <p style="font-size:12px;opacity:.6">需要 HTTPS 环境并授权摄像头</p>
@@ -58,6 +58,7 @@
 <script src="assets/actions.js"></script>
 <script src="assets/lib/aframe-v1.5.0.min.js"></script>
 <script src="assets/lib/mindar-image-aframe.prod.js"></script>
+<script src="assets/transparent-video.js"></script>
 <script>
 (function () {
   'use strict';
@@ -85,8 +86,8 @@
     return;
   }
 
-  document.title = action.name + ' · AR';
-  $('ov-title').textContent = action.name;
+  document.title = action.name + ' · 凤鸟衔来的千年记忆';
+  $('ov-title').textContent = '凤鸟衔来的千年记忆 · ' + action.name;
   $('ov-desc').textContent = action.desc;
   $('btn-back').addEventListener('click', function () { location.href = 'index.html'; });
 
@@ -137,6 +138,7 @@
     // 1 单位 = 追踪图宽度，原点在图片中心；高度按追踪图比例铺满，误差 <0.2% 不变形
     var plane = document.createElement('a-video');
     plane.setAttribute('src', '#ar-vid');
+    plane.setAttribute('material', 'shader: white-key; src: #ar-vid; transparent: true; depthWrite: false; side: double');
     plane.setAttribute('width', '1');
     plane.setAttribute('height', String(action.planeHeight.toFixed(4)));
     plane.setAttribute('position', '0 0 0');
