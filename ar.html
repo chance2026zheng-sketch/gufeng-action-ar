@@ -125,7 +125,13 @@
         // 相机仰角超过 tiltStart 后开始后倾，最多后倾 tiltMax 度。
         // 45° 以内严格垂直站立；正上方俯视时靠后倾保证仍能看见人物。
         tiltStart: { type: 'number', default: 45 },
-        tiltMax: { type: 'number', default: 45 }
+        tiltMax: { type: 'number', default: 45 },
+        // 朝向平滑：相机位姿噪声会直接变成人物转向抖动，
+        // 且人物越高、头顶被放得越大，所以这里对 yaw/tilt 单独做死区+阻尼。
+        yawRate: { type: 'number', default: 6 },
+        tiltRate: { type: 'number', default: 4 },
+        yawDeadzone: { type: 'number', default: 1.5 },   // 度
+        tiltDeadzone: { type: 'number', default: 1.0 }   // 度
       },
 
       init: function () {
@@ -139,11 +145,14 @@
         this._quat = new AFRAME.THREE.Quaternion();
         this._basis = new AFRAME.THREE.Matrix4();
         this._inv = new AFRAME.THREE.Matrix4();
+        this._yaw = null;        // 平滑后的朝向角（弧度）
+        this._tilt = 0;          // 平滑后的后倾角（弧度）
+        this._prevTime = null;
         // 自己接管矩阵，避免 A-Frame 用 position/rotation 覆盖
         this.el.object3D.matrixAutoUpdate = false;
       },
 
-      tick: function () {
+      tick: function (time) {
         var obj = this.el.object3D;
         var anchor = this.el.parentNode && this.el.parentNode.object3D;
         var sceneEl = this.el.sceneEl;
@@ -160,20 +169,48 @@
         camObj.updateWorldMatrix(true, false);
         this._camLocal.setFromMatrixPosition(camObj.matrixWorld).applyMatrix4(this._inv);
 
+        var dt = this._prevTime == null ? 0.016 : (time - this._prevTime) / 1000;
+        this._prevTime = time;
+        if (!(dt > 0) || dt > 0.1) dt = 0.016;
+
         // 人物站在纸面中心，脚底 z=0；朝向取相机在纸面上的投影方向
         var dx = this._camLocal.x;
         var dy = this._camLocal.y;
         var len = Math.sqrt(dx * dx + dy * dy);
-        var hx, hy;
-        if (len < 1e-6) { hx = 0; hy = -1; }  // 正上方俯视时取默认朝向
-        else { hx = dx / len; hy = dy / len; }
 
-        // 相机相对纸面的仰角。常规视角（<= tiltStart）严格垂直站立；
-        // 视角很陡时让人物适度后倾，避免垂直平面正对上方相机时退化成侧面薄片。
+        // 目标朝向角与后倾角
+        var yawTarget = (len < 1e-6) ? (this._yaw == null ? Math.atan2(-1, 0) : this._yaw)
+                                     : Math.atan2(dy, dx);
         var elev = Math.atan2(this._camLocal.z, len);
-        var tilt = Math.max(0, elev - this.data.tiltStart * Math.PI / 180);
-        tilt = Math.min(tilt, this.data.tiltMax * Math.PI / 180);
-        var ct = Math.cos(tilt), st = Math.sin(tilt);
+        var tiltTarget = Math.max(0, elev - this.data.tiltStart * Math.PI / 180);
+        tiltTarget = Math.min(tiltTarget, this.data.tiltMax * Math.PI / 180);
+
+        var D2R = Math.PI / 180;
+        if (this._yaw == null) {
+          this._yaw = yawTarget;
+          this._tilt = tiltTarget;
+        } else {
+          // yaw 差值归一到 [-PI, PI]，避免跨 ±180° 时绕远路
+          var dYaw = yawTarget - this._yaw;
+          while (dYaw > Math.PI) dYaw -= 2 * Math.PI;
+          while (dYaw < -Math.PI) dYaw += 2 * Math.PI;
+          // 大角度偏差（绕到人物背面）要快速转身，否则平滑惯性会让人物
+          // 长时间背对镜头；小偏差才用强平滑压噪声。
+          var yawBig = Math.abs(dYaw) > 25 * D2R;
+          var yawRate = yawBig ? 14 : this.data.yawRate;
+          if (yawBig || Math.abs(dYaw) > this.data.yawDeadzone * D2R) {
+            this._yaw += dYaw * (1 - Math.exp(-yawRate * dt));
+          }
+          var dTilt = tiltTarget - this._tilt;
+          var tiltBig = Math.abs(dTilt) > 15 * D2R;
+          var tiltRate = tiltBig ? 12 : this.data.tiltRate;
+          if (tiltBig || Math.abs(dTilt) > this.data.tiltDeadzone * D2R) {
+            this._tilt += dTilt * (1 - Math.exp(-tiltRate * dt));
+          }
+        }
+
+        var hx = Math.cos(this._yaw), hy = Math.sin(this._yaw);
+        var ct = Math.cos(this._tilt), st = Math.sin(this._tilt);
 
         // right 与"纸面内指向相机"垂直；up 由 +Z 向背离相机的水平方向倾斜 tilt
         this._right.set(-hy, hx, 0);
@@ -196,38 +233,123 @@
     });
   }
 
-  /* ============ 位置保持：纸放下/移出画面后人物不消失 ============
-   * MindAR 丢失目标时会把锚点矩阵置零并 visible=false，人物随之消失，
-   * 于是"扫出来之后把纸放下去"就看不到人了。
-   * 这里在每次成功追踪时记录锚点世界矩阵；丢失后沿用最后一次的位置，
-   * 让人物继续站在原处播放。重新识别到图时自动跟回图片。
+  /* ============ 位姿阻尼 + 位置保持 ============
+   * 两个问题一起解决：
+   * 1) 抖动：图像追踪的位姿本身有噪声。人物垂直站立后，底边的微小抖动
+   *    会沿身高被放大（力臂效应），头顶晃得尤其明显。这里把矩阵分解成
+   *    位置/旋转/缩放，位置做指数阻尼、旋转做球面插值，逐帧逼近目标，
+   *    既压掉高频噪声又保留真实移动。
+   * 2) 保持：MindAR 丢失目标会把矩阵置零并 visible=false，人物随之消失。
+   *    这里沿用最后一次平滑后的位姿，让人物留在原处；重新识别则跟回纸面。
    */
   if (window.AFRAME && !AFRAME.components['anchor-persist']) {
     AFRAME.registerComponent('anchor-persist', {
-      schema: { enabled: { type: 'boolean', default: true } },
+      schema: {
+        enabled: { type: 'boolean', default: true },
+        // 每秒收敛速率（指数低通）。越小越稳、越大越跟手。
+        // 3.5 约 285ms 时间常数：对"人物站在纸上、人缓慢移动手机"这种
+        // 低频运动完全跟得上，同时把追踪高频噪声压到很低。
+        posRate: { type: 'number', default: 5 },
+        // 旋转噪声会经身高放大成头顶摇摆，比位置噪声更显眼，阻尼更强。
+        rotRate: { type: 'number', default: 2.5 },
+        // 保留参数以兼容旧调用，但默认关闭硬死区（见 tick 内说明）
+        deadzone: { type: 'number', default: 0 },
+        rotDeadzone: { type: 'number', default: 0 },
+        // 人物身高（锚点单位），用于按身高归一化旋转阻尼
+        figureHeight: { type: 'number', default: 1 }
+      },
 
       init: function () {
-        this._last = new AFRAME.THREE.Matrix4();
+        var T = AFRAME.THREE;
+        this._last = new T.Matrix4();
+        this._target = new T.Matrix4();
         this._has = false;
         this._persisting = false;
+        this._smoothPos = new T.Vector3();
+        this._smoothQuat = new T.Quaternion();
+        this._smoothScale = new T.Vector3(1, 1, 1);
+        this._tPos = new T.Vector3();
+        this._tQuat = new T.Quaternion();
+        this._tScale = new T.Vector3();
+        // 上次"采纳"的目标位姿，死区以它为基准
+        this._anchorPos = new T.Vector3();
+        this._anchorQuat = new T.Quaternion();
+        this._prevTime = null;
+        this._reacquire = false;
         var self = this;
         this.el.addEventListener('targetFound', function () {
           self._persisting = false;
+          // 重新识别：纸可能已被移到别处，若沿用旧平滑值会因偏差过大
+          // 而长时间跟不上（甚至看起来卡住）。这里标记需要重新对齐。
+          self._reacquire = true;
         });
       },
 
-      tick: function () {
+      tick: function (time) {
         if (!this.data.enabled) return;
         var obj = this.el.object3D;
+        var T = AFRAME.THREE;
+
+        // 帧间隔（秒），钳制避免切后台回来时大步长跳变
+        var dt = this._prevTime == null ? 0.016 : (time - this._prevTime) / 1000;
+        this._prevTime = time;
+        if (!(dt > 0) || dt > 0.1) dt = 0.016;
+
         if (obj.visible) {
-          // 正在追踪：记录有效位置
           obj.updateWorldMatrix(true, false);
-          this._last.copy(obj.matrixWorld);
-          this._has = true;
+          this._target.copy(obj.matrixWorld);
+          this._target.decompose(this._tPos, this._tQuat, this._tScale);
+
+          // 重新识别且偏差很大时直接对齐，避免长时间追赶看起来像卡住
+          if (this._reacquire) {
+            this._reacquire = false;
+            this._prevTime = null;
+            if (this._smoothPos.distanceTo(this._tPos) > 0.15) {
+              this._smoothPos.copy(this._tPos);
+              this._smoothQuat.copy(this._tQuat);
+              this._smoothScale.copy(this._tScale);
+              this._anchorPos.copy(this._tPos);
+              this._anchorQuat.copy(this._tQuat);
+              this._last.compose(this._smoothPos, this._smoothQuat, this._smoothScale);
+              obj.matrix.copy(this._last);
+              obj.matrixWorld.copy(this._last);
+              obj.matrixWorldNeedsUpdate = false;
+              return;
+            }
+          }
+
+          if (!this._has) {
+            // 首次锁定：直接对齐，避免从原点飞入
+            this._smoothPos.copy(this._tPos);
+            this._smoothQuat.copy(this._tQuat);
+            this._smoothScale.copy(this._tScale);
+            this._anchorPos.copy(this._tPos);
+            this._anchorQuat.copy(this._tQuat);
+            this._has = true;
+          } else {
+            // 纯低通（指数阻尼），不用硬死区。
+            // 硬死区会让采纳值阶梯式跳变，阻尼跟不上反而产生台阶抖动
+            // （实测残余反而变大）。连续低通对高频噪声衰减更干净。
+            var ap = 1 - Math.exp(-this.data.posRate * dt);
+            this._smoothPos.lerp(this._tPos, ap);
+            // 旋转噪声在头顶的位移 ≈ 身高 × 角度，所以人物越高就要越强地
+            // 抑制旋转。按身高归一化，使不同比例的动作观感一致。
+            // 超线性：身高越长，杠杆放大越强，需要比线性更快地收紧阻尼
+            var hNorm = Math.pow(Math.max(0.5, this.data.figureHeight || 1), 1.6);
+            var ar = 1 - Math.exp(-(this.data.rotRate / hNorm) * dt);
+            this._smoothQuat.slerp(this._tQuat, ar);
+            this._smoothScale.copy(this._tScale);
+          }
+
+          this._last.compose(this._smoothPos, this._smoothQuat, this._smoothScale);
+          obj.matrix.copy(this._last);
+          obj.matrixWorld.copy(this._last);
+          obj.matrixWorldNeedsUpdate = false;
           return;
         }
+
         if (!this._has) return;
-        // 丢失追踪：恢复最后一次的位置，保持人物可见
+        // 丢失追踪：沿用最后平滑位姿，人物留在原处
         obj.visible = true;
         obj.matrix.copy(this._last);
         obj.matrixWorld.copy(this._last);
@@ -245,7 +367,12 @@
     scene.setAttribute('mindar-image',
       'imageTargetSrc: ' + action.target + ';' +
       'autoStart: true; uiLoading: no; uiScanning: no; uiError: no;' +
-      'maxTrack: 1; missTolerance: 3; warmupTolerance: 2');
+      // 抖动抑制：MindAR 默认 filterBeta=1000 极大，One Euro 滤波器里
+      // cutOff = minCutOff + beta*|速度|，beta 这么高等于对噪声几乎不滤波。
+      // 降到 0.02 让静止时强平滑、移动时仍能跟上；
+      // missTolerance 提高可避免瞬时丢帧造成的位置跳变。
+      'maxTrack: 1; missTolerance: 8; warmupTolerance: 4;' +
+      'filterMinCF: 0.0008; filterBeta: 0.02');
     scene.setAttribute('color-space', 'sRGB');
     scene.setAttribute('renderer', 'antialias: true; colorManagement: true; physicallyCorrectLights: true');
     scene.setAttribute('embedded', '');
@@ -274,8 +401,9 @@
 
     var target = document.createElement('a-entity');
     target.setAttribute('mindar-image-target', 'targetIndex: 0');
-    // 丢失追踪后保持人物留在原处（纸可以放下）
-    target.setAttribute('anchor-persist', '');
+    // 丢失追踪后保持人物留在原处（纸可以放下）；
+    // figureHeight 用于按身高归一化旋转阻尼（高个人物头顶放大更明显）
+    target.setAttribute('anchor-persist', 'figureHeight: ' + action.planeHeight.toFixed(4));
 
     // 1 单位 = 追踪图宽度，原点在图片中心。
     // 锚点局部坐标里图片躺在 XY 平面、+Z 指向纸面外，
