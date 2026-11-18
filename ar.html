@@ -56,6 +56,7 @@
 <div id="story-title"><small>楚韵新生 · AR 奇遇</small><h1>凤鸟衔来的千年</h1></div><section id="story-controls" hidden><nav id="scene-tabs" aria-label="切换场景"></nav><div class="size-row"><label for="character-size">人物大小</label><input id="character-size" type="range" min="50" max="150" value="100"><output id="size-value">100%</output><button id="size-reset">复原</button></div></section><div id="tip" class="hide"></div>
 
 <script src="assets/actions.js"></script>
+<script src="assets/env-detect.js?v=wx1"></script>
 <script src="assets/lib/aframe-v1.5.0.min.js"></script>
 <script src="assets/lib/mindar-image-aframe.prod.js?v=camera2"></script>
 <script src="assets/transparent-video.js?v=matte3"></script>
@@ -65,8 +66,11 @@
 
   var params = new URLSearchParams(location.search);
   var key = params.get('action');
-  var mode = params.get('mode') === 'gyro' ? 'gyro' : 'ar';
+  // mode: ar=扫图追踪, gyro=摄像头实景自由展示, view=纯展示（无需摄像头，微信可用）
+  var rawMode = params.get('mode');
+  var mode = (rawMode === 'gyro' || rawMode === 'view') ? rawMode : 'ar';
   var action = window.getAction(key);
+  var ENV = window.AR_ENV || { isWeChat: false, isSecure: true, hasMediaDevices: true };
 
   var $ = function (id) { return document.getElementById(id); };
   var tipTimer = null;
@@ -290,6 +294,9 @@
 
     var found = false;
     var lostCount = 0;
+    var arStarted = false;   // MindAR 是否已成功启动摄像头（arReady）
+
+    scene.addEventListener('arReady', function () { arStarted = true; });
 
     target.addEventListener('targetFound', function () {
       found = true;
@@ -315,8 +322,68 @@
     });
 
     scene.addEventListener('arError', function () {
-      tip('摄像头启动失败，请检查权限或用 HTTPS 访问', 7000);
+      // MindAR 启动摄像头失败（微信内常见）。
+      // 不要调 sys.stop()：摄像头未起来时其内部状态未初始化，会抛
+      // "Cannot read properties of undefined (reading 'stopProcessVideo')"。
+      bailToView('摄像头启动失败，已切换展示模式');
     });
+
+    // 微信内 getUserMedia 可能永久挂起：既不 resolve 也不 reject，
+    // 此时 MindAR 仍可能派发 arReady（场景已加载），所以不能只看事件。
+    // 唯一可靠的判据是"摄像头视频是否真的出画面"：检查 MindAR 内部 video 元素。
+    function cameraActuallyRunning() {
+      try {
+        var sys = scene.systems && scene.systems['mindar-image-system'];
+        var v = sys && sys.video;
+        if (v && v.readyState >= 2 && v.videoWidth > 0 && !v.paused) return true;
+        // 退一步：页面上任何正在播放的摄像头流
+        var vids = document.querySelectorAll('video');
+        for (var i = 0; i < vids.length; i++) {
+          if (vids[i].srcObject && vids[i].readyState >= 2 && vids[i].videoWidth > 0) return true;
+        }
+      } catch (e) {}
+      return false;
+    }
+
+    function bailToView(reason) {
+      if (mode !== 'ar') return;
+      var sys = null;
+      try { sys = scene.systems && scene.systems['mindar-image-system']; } catch (e) {}
+
+      // 释放 MindAR 可能持有的摄像头，避免指示灯常亮
+      try {
+        if (sys && sys.video && sys.video.srcObject) {
+          sys.video.srcObject.getTracks().forEach(function (t) { t.stop(); });
+          sys.video.srcObject = null;
+        }
+      } catch (e) {}
+
+      // 关键：直接移除 DOM 会触发 A-Frame 卸载组件 -> MindAR.stop() -> pause()，
+      // 而摄像头未启动时其内部 controller 为 undefined，会抛
+      // "Cannot read properties of undefined (reading 'stopProcessVideo')"。
+      // 先把该组件的 remove 钩子替换为空实现，再移除节点。
+      try {
+        var comp = scene.components && scene.components['mindar-image'];
+        if (comp) comp.remove = function () {};
+      } catch (e) {}
+      try {
+        if (sys && typeof sys.pause === 'function') sys.pause = function () {};
+      } catch (e) {}
+
+      var root = $('aframe-root');
+      if (root) {
+        try { root.innerHTML = ''; } catch (e) { while (root.firstChild) root.removeChild(root.firstChild); }
+      }
+      mode = 'view';
+      startView();
+      tip(reason + (ENV.isInAppBrowser ? '。' + ENV.openInBrowserHint() : ''), 10000);
+    }
+
+    // 15 秒仍无摄像头画面 -> 判定失败并降级
+    setTimeout(function () {
+      if (mode !== 'ar') return;
+      if (!cameraActuallyRunning()) bailToView('摄像头无响应，已切换展示模式');
+    }, 15000);
 
     // 40 秒未识别则提示兜底
     setTimeout(function () {
@@ -340,26 +407,36 @@
       if (floatEl.paused) floatEl.play().catch(function () {});
     }
 
-    var ready = false;
-    navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 } },
-      audio: false
-    }).then(function (stream) {
-      camEl.srcObject = stream;
-      camEl.play().catch(function () {});
-      ready = true;
+    function fallbackToView(reason) {
       showHud();
-      playAll();
-      tip('人物居中展示，可用下方滑杆调整大小', 4200);
-
-    }).catch(function () {
-      showHud();
-      // 摄像头不可用时退化为纯视频播放
       camEl.style.display = 'none';
       $('gyro-stage').style.background = '#241a1c';
       playAll();
-      tip('摄像头不可用，当前为普通播放模式', 6000);
+      // 已无摄像头实景，徽标应如实反映为展示模式
+      mode = 'view';
+      $('name-badge').textContent = action.name + ' · 展示模式';
+      $('btn-switch').textContent = '尝试摄像头 AR';
+      $('btn-switch').onclick = function () { location.href = 'ar.html?action=' + key + '&mode=ar'; };
+      tip(reason || '摄像头不可用，已切换为展示模式', 6000);
+    }
 
+    // 微信内置浏览器里 getUserMedia 可能同步抛错或永久挂起，
+    // 统一走带超时的探测，任何失败都降级到纯展示，不让页面卡死。
+    ENV.probeCamera(8000, {
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 } },
+      audio: false
+    }).then(function (res) {
+      if (res && res.stream) {
+        camEl.srcObject = res.stream;
+        camEl.play().catch(function () {});
+        showHud();
+        playAll();
+        tip('人物居中展示，可用下方滑杆调整大小', 4200);
+      } else {
+        fallbackToView(res && res.message);
+      }
+    }).catch(function () {
+      fallbackToView();
     });
 
     wrap.addEventListener('click', playAll);
@@ -367,13 +444,79 @@
     $('btn-switch').onclick = function () { location.href = 'ar.html?action=' + key + '&mode=ar'; };
   }
 
-  /* iOS 需用户手势后才能启动摄像头与播放视频 */
-  let starting = false;
+  /* ============ 纯展示模式：完全不用摄像头，微信内可直接观看 ============
+   * 微信内置浏览器对 getUserMedia 限制很严（安卓部分支持、iOS 常失败、
+   * 且可能永久挂起），所以提供一条不依赖任何摄像头权限的路径，
+   * 保证微信扫码进来一定能看到人物动作。
+   */
+  function startView() {
+    $('gyro-stage').classList.add('on');
+    var camEl = $('cam');
+    var floatEl = $('float');
+    var wrap = $('float-wrap');
+    camEl.style.display = 'none';
+    $('gyro-stage').style.background = 'radial-gradient(circle at 50% 40%, #3a2426 0%, #1a1214 70%)';
+    floatEl.src = action.video;
+    floatEl.muted = true;
+    floatEl.setAttribute('playsinline', '');
+    floatEl.setAttribute('webkit-playsinline', '');
+    // 微信安卓需用户首次触摸后才能播放；这里已在按钮点击的同一手势链里
+    floatEl.play().catch(function () {});
+    showHud();
+    $('name-badge').textContent = action.name + ' · 展示模式';
+    wrap.addEventListener('click', function () { floatEl.play().catch(function () {}); });
+    $('btn-switch').textContent = '尝试摄像头 AR';
+    $('btn-switch').onclick = function () { location.href = 'ar.html?action=' + key + '&mode=ar'; };
+    tip(ENV.isWeChat ? ('展示模式：' + ENV.openInBrowserHint()) : '展示模式，点右上角可尝试摄像头 AR', 9000);
+  }
+
+  /* iOS / 微信需用户手势后才能启动摄像头与播放视频 */
+  var starting = false;
   $('ov-start').addEventListener('click', function () {
     if (starting) return;
     starting = true;
-    if (mode === 'ar') startAR(); else startGyro();
+    if (mode === 'view') { startView(); return; }
+    if (mode === 'gyro') { startGyro(); return; }
+
+    // 扫图模式：不做预探测。
+    // 预探测会先占用摄像头再释放，随后 MindAR 再开一路，两者可能争抢设备
+    // 导致启动失败（实测偶发）。这里只判断"环境是否可能支持"，
+    // 真正的启动交给 MindAR，失败由 arError 与超时兜底降级。
+    if (!ENV.isSecure || !ENV.hasMediaDevices) {
+      mode = 'view';
+      startView();
+      var why = !ENV.isSecure ? '非 HTTPS 环境无法调用摄像头' : '当前浏览器不支持网页摄像头';
+      tip(why + '，已切换展示模式。' + (ENV.isInAppBrowser ? ENV.openInBrowserHint() : ''), 10000);
+      return;
+    }
+    $('ov-start').textContent = '正在启动…';
+    startAR();
   });
+
+  /* 微信内进入时给出明确提示与一键展示入口 */
+  (function initWeChatNotice() {
+    if (!ENV.isInAppBrowser) return;
+    var note = document.createElement('p');
+    note.id = 'wx-note';
+    note.style.cssText = 'font-size:13px;line-height:1.7;opacity:.9;max-width:30em;margin:0';
+    note.textContent = '微信内可能无法调用摄像头。可先看展示模式，或' + ENV.openInBrowserHint() + '。';
+    var overlay = $('start-overlay');
+    overlay.insertBefore(note, $('ov-start'));
+
+    var viewBtn = document.createElement('button');
+    viewBtn.className = 'btn ghost';
+    viewBtn.id = 'ov-view';
+    viewBtn.textContent = '直接看展示（不用摄像头）';
+    overlay.appendChild(viewBtn);
+    viewBtn.addEventListener('click', function () {
+      if (starting) return;
+      starting = true;
+      mode = 'view';
+      startView();
+    });
+    // 微信内默认按钮改为先试摄像头，文案更明确
+    $('ov-start').textContent = '尝试开启摄像头 AR';
+  })();
 })();
 </script>
 </body>

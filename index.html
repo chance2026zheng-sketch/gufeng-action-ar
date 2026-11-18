@@ -73,6 +73,7 @@
 </div>
 
 <script src="assets/actions.js"></script>
+<script src="assets/env-detect.js?v=wx1"></script>
 <script src="assets/lib/qrcode.bundle.min.js"></script>
 <script>
 (function () {
@@ -80,12 +81,37 @@
   var grid = document.getElementById('grid');
   var ref = document.getElementById('ref');
 
-  document.getElementById('hero-start').href='ar.html?action='+window.AR_ORDER[0]+'&mode=ar';
+  var ENV = window.AR_ENV || { isInAppBrowser: false, isWeChat: false };
+
+  // 微信内置浏览器对摄像头限制很严：给出明确提示与「不用摄像头」的入口，
+  // 保证扫码进来一定能看到内容，而不是卡在授权或白屏。
+  if (ENV.isInAppBrowser) {
+    var bar = document.createElement('div');
+    bar.id = 'wx-bar';
+    bar.style.cssText = 'margin:0 0 16px;padding:14px 16px;border-radius:12px;background:#3a2426;border:1px solid #5a3a3c;font-size:13px;line-height:1.75';
+    var h = document.createElement('b');
+    h.textContent = '当前在微信内打开';
+    h.style.cssText = 'display:block;margin-bottom:6px;font-size:14px';
+    var t = document.createElement('div');
+    t.textContent = '微信可能不允许网页调用摄像头。想看完整 AR 扫描效果，请' + ENV.openInBrowserHint() + '；也可以直接点下面的动作先看展示。';
+    var vb = document.createElement('button');
+    vb.className = 'btn';
+    vb.style.cssText = 'margin-top:10px';
+    vb.textContent = '先看展示（不用摄像头）';
+    vb.onclick = function () { location.href = 'ar.html?action=' + window.AR_ORDER[0] + '&mode=view'; };
+    bar.appendChild(h); bar.appendChild(t); bar.appendChild(vb);
+    var wrapEl = document.querySelector('.wrap');
+    wrapEl.insertBefore(bar, wrapEl.firstChild.nextSibling);
+  }
+
+  // 微信内卡片默认进展示模式（稳定可见）；外部浏览器仍直接进 AR
+  var entryMode = ENV.isInAppBrowser ? 'view' : 'ar';
+  document.getElementById('hero-start').href='ar.html?action='+window.AR_ORDER[0]+'&mode='+entryMode;
   window.AR_ORDER.forEach(function (key) {
     var a = window.getAction(key);
     var card = document.createElement('a');
     card.className = 'card';
-    card.href = 'ar.html?action=' + key + '&mode=ar';
+    card.href = 'ar.html?action=' + key + '&mode=' + entryMode;
 
     var img = document.createElement('img');
     img.className = 'thumb';
