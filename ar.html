@@ -92,7 +92,7 @@
   $('btn-back').addEventListener('click', function () { location.href = 'index.html'; });
 
   window.AR_ORDER.forEach(function(k){var a=window.getAction(k),b=document.createElement('a');b.textContent=a.name;b.href='ar.html?action='+encodeURIComponent(k)+'&mode='+mode;b.className=k===key?'selected':'';if(k===key)b.setAttribute('aria-current','true');$('scene-tabs').appendChild(b);});
-  function resizeCharacter(){var n=Number($('character-size').value)/100;$('size-value').textContent=Math.round(n*100)+'%';$('float-wrap').style.width=(62*n)+'vmin';var plane=document.querySelector('a-video');if(plane)plane.setAttribute('scale',n+' '+n+' '+n);}
+  function resizeCharacter(){var n=Number($('character-size').value)/100;$('size-value').textContent=Math.round(n*100)+'%';$('float-wrap').style.width=(62*n)+'vmin';var plane=document.querySelector('a-video');if(!plane)return;if(plane.components['stand-figure']){plane.setAttribute('stand-figure','scale',n);}else{plane.setAttribute('scale',n+' '+n+' '+n);}}
   $('character-size').addEventListener('input',resizeCharacter);
   $('size-reset').onclick=function(){$('character-size').value=100;resizeCharacter();};
   function showHud() {
@@ -102,6 +102,137 @@
     var badge = $('name-badge');
     badge.textContent = action.name + ' · ' + (mode === 'ar' ? '扫图追踪' : '自由展示');
     badge.style.display = 'block';
+  }
+
+  /* ============ 站立组件：人物垂直立在纸面上，正面朝向镜头 ============
+   * MindAR 锚点局部坐标：图片躺在 XY 平面，+Z 指向纸面外（法线方向），1 单位 = 图宽。
+   * 直接把视频平面留在 XY 平面 = 人物平躺在纸上（原来的效果）。
+   * 这里每帧重建平面的局部矩阵：
+   *   up    = 锚点 +Z（纸面法线）→ 人物沿纸面法线方向立起来
+   *   right = up × (指向相机的方向) 投影到纸面 → 人物正面始终朝向镜头
+   *   底边锚定在 z=0，人物脚踩纸面，纸放平后人物垂直站立。
+   * 每帧重算而非一次性设 rotation，保证把纸转任意角度、手机绕着走都不会看到侧面薄片。
+   */
+  if (window.AFRAME && !AFRAME.components['stand-figure']) {
+    AFRAME.registerComponent('stand-figure', {
+      schema: {
+        height: { type: 'number', default: 1 },
+        scale: { type: 'number', default: 1 },
+        // 相机仰角超过 tiltStart 后开始后倾，最多后倾 tiltMax 度。
+        // 45° 以内严格垂直站立；正上方俯视时靠后倾保证仍能看见人物。
+        tiltStart: { type: 'number', default: 45 },
+        tiltMax: { type: 'number', default: 45 }
+      },
+
+      init: function () {
+        this._m = new AFRAME.THREE.Matrix4();
+        this._camLocal = new AFRAME.THREE.Vector3();
+        this._up = new AFRAME.THREE.Vector3(0, 0, 1);
+        this._right = new AFRAME.THREE.Vector3();
+        this._fwd = new AFRAME.THREE.Vector3();
+        this._pos = new AFRAME.THREE.Vector3();
+        this._scale = new AFRAME.THREE.Vector3();
+        this._quat = new AFRAME.THREE.Quaternion();
+        this._basis = new AFRAME.THREE.Matrix4();
+        this._inv = new AFRAME.THREE.Matrix4();
+        // 自己接管矩阵，避免 A-Frame 用 position/rotation 覆盖
+        this.el.object3D.matrixAutoUpdate = false;
+      },
+
+      tick: function () {
+        var obj = this.el.object3D;
+        var anchor = this.el.parentNode && this.el.parentNode.object3D;
+        var sceneEl = this.el.sceneEl;
+        if (!anchor || !sceneEl || !sceneEl.camera) return;
+
+        // 锚点不可见（未识别到图）时不必计算
+        if (!anchor.visible) return;
+
+        anchor.updateWorldMatrix(true, false);
+        this._inv.copy(anchor.matrixWorld).invert();
+
+        // 相机位置换算到锚点局部坐标
+        var camObj = sceneEl.camera;
+        camObj.updateWorldMatrix(true, false);
+        this._camLocal.setFromMatrixPosition(camObj.matrixWorld).applyMatrix4(this._inv);
+
+        // 人物站在纸面中心，脚底 z=0；朝向取相机在纸面上的投影方向
+        var dx = this._camLocal.x;
+        var dy = this._camLocal.y;
+        var len = Math.sqrt(dx * dx + dy * dy);
+        var hx, hy;
+        if (len < 1e-6) { hx = 0; hy = -1; }  // 正上方俯视时取默认朝向
+        else { hx = dx / len; hy = dy / len; }
+
+        // 相机相对纸面的仰角。常规视角（<= tiltStart）严格垂直站立；
+        // 视角很陡时让人物适度后倾，避免垂直平面正对上方相机时退化成侧面薄片。
+        var elev = Math.atan2(this._camLocal.z, len);
+        var tilt = Math.max(0, elev - this.data.tiltStart * Math.PI / 180);
+        tilt = Math.min(tilt, this.data.tiltMax * Math.PI / 180);
+        var ct = Math.cos(tilt), st = Math.sin(tilt);
+
+        // right 与"纸面内指向相机"垂直；up 由 +Z 向背离相机的水平方向倾斜 tilt
+        this._right.set(-hy, hx, 0);
+        this._up.set(-st * hx, -st * hy, ct);
+        this._fwd.crossVectors(this._right, this._up).normalize();
+
+        this._basis.makeBasis(this._right, this._up, this._fwd);
+        this._quat.setFromRotationMatrix(this._basis);
+        // 底边贴纸：平面几何以中心为原点，故沿 up 抬升半个（缩放后的）高度，
+        // 这样调节大小时脚底始终踩在纸面上，不会浮空或陷入
+        var s = this.data.scale;
+        var h = this.data.height * s;
+        // 沿倾斜后的 up 抬升半个高度，底边中点始终落在纸面原点（脚踩纸）
+        this._pos.copy(this._up).multiplyScalar(h / 2);
+        this._scale.set(s, s, s);
+        this._m.compose(this._pos, this._quat, this._scale);
+        obj.matrix.copy(this._m);
+        obj.matrixWorldNeedsUpdate = true;
+      }
+    });
+  }
+
+  /* ============ 位置保持：纸放下/移出画面后人物不消失 ============
+   * MindAR 丢失目标时会把锚点矩阵置零并 visible=false，人物随之消失，
+   * 于是"扫出来之后把纸放下去"就看不到人了。
+   * 这里在每次成功追踪时记录锚点世界矩阵；丢失后沿用最后一次的位置，
+   * 让人物继续站在原处播放。重新识别到图时自动跟回图片。
+   */
+  if (window.AFRAME && !AFRAME.components['anchor-persist']) {
+    AFRAME.registerComponent('anchor-persist', {
+      schema: { enabled: { type: 'boolean', default: true } },
+
+      init: function () {
+        this._last = new AFRAME.THREE.Matrix4();
+        this._has = false;
+        this._persisting = false;
+        var self = this;
+        this.el.addEventListener('targetFound', function () {
+          self._persisting = false;
+        });
+      },
+
+      tick: function () {
+        if (!this.data.enabled) return;
+        var obj = this.el.object3D;
+        if (obj.visible) {
+          // 正在追踪：记录有效位置
+          obj.updateWorldMatrix(true, false);
+          this._last.copy(obj.matrixWorld);
+          this._has = true;
+          return;
+        }
+        if (!this._has) return;
+        // 丢失追踪：恢复最后一次的位置，保持人物可见
+        obj.visible = true;
+        obj.matrix.copy(this._last);
+        obj.matrixWorld.copy(this._last);
+        obj.matrixWorldNeedsUpdate = false;
+        this._persisting = true;
+      },
+
+      isPersisting: function () { return this._persisting; }
+    });
   }
 
   /* ============ AR 模式：MindAR 图像追踪 ============ */
@@ -139,14 +270,19 @@
 
     var target = document.createElement('a-entity');
     target.setAttribute('mindar-image-target', 'targetIndex: 0');
+    // 丢失追踪后保持人物留在原处（纸可以放下）
+    target.setAttribute('anchor-persist', '');
 
-    // 1 单位 = 追踪图宽度，原点在图片中心；高度按追踪图比例铺满，误差 <0.2% 不变形
+    // 1 单位 = 追踪图宽度，原点在图片中心。
+    // 锚点局部坐标里图片躺在 XY 平面、+Z 指向纸面外，
+    // 所以让人物"站起来"= 把平面的高度方向对齐到 +Z，底边落在纸面 z=0 上。
+    // stand-figure 每帧重建朝向矩阵，使人物垂直站立且正面朝向镜头。
     var plane = document.createElement('a-video');
     plane.setAttribute('src', '#ar-vid');
     plane.setAttribute('material', 'shader: white-key; src: #ar-vid; transparent: true; depthWrite: false; side: double');
     plane.setAttribute('width', '1');
     plane.setAttribute('height', String(action.planeHeight.toFixed(4)));
-    plane.setAttribute('position', '0 0 0');
+    plane.setAttribute('stand-figure', 'height: ' + action.planeHeight.toFixed(4));
     target.appendChild(plane);
     scene.appendChild(target);
 
@@ -159,15 +295,16 @@
       found = true;
       lostCount = 0;
       vid.play().catch(function () {});
-      tip('已锁定，移动手机视频会跟随原图', 3200);
+      tip('已锁定：可以把纸放平，人物会立在纸上', 4000);
     });
 
     target.addEventListener('targetLost', function () {
-      vid.pause();
+      // 不暂停：人物保持在最后识别到的位置继续动作，纸可以放下或移出画面
+      vid.play().catch(function () {});
       lostCount++;
-      tip('已丢失原图，把镜头对准画面', 2600);
+      tip('人物已留在原处，可放下纸自由观看', 3200);
       if (lostCount >= 3) {
-        tip('追踪不稳定，可点左上角切换自由展示', 5200);
+        tip('想让人物重新跟随纸面，把镜头再对准图即可', 5200);
         lostCount = 0;
       }
     });
